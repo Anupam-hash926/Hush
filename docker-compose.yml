@@ -1,0 +1,14 @@
+services:
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+
+  neo4j:
+    # YOUR TURN: Fill in the configuration for Neo4j here
+    image: neo4j:latest
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/Test123
