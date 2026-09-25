@@ -16,13 +16,4 @@ redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
 redis_client=redis.Redis.from_url(redis_url)
 
 
-async def test_connections():
-    await redis_client.ping()
-    print("Redis is connected!")
-    
-    neo4j_driver.verify_connectivity()
-    print("Neo4j is connected!")
 
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(test_connections())
