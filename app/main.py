@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
-from app.security import get_password_hash
-from app.schemas import UserCreate
-from app.crud import create_user_in_db
+from app.security import get_password_hash, verify_password, create_access_token
+from app.schemas import UserCreate, UserLogin, Token
+from app.crud import create_user_in_db, get_user_by_email
 
 app = FastAPI(title="Hush API")
 
@@ -18,3 +18,13 @@ async def register_user(user: UserCreate):
         raise HTTPException(status_code=400, detail="User already exists")
         
     return {"message": "User registered successfully", "email": created_email}
+
+@app.post("/login", response_model=Token)
+async def login(user: UserLogin):
+    password_hash = get_user_by_email(user.email)
+    
+    if not password_hash or not verify_password(user.password, password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+    token = create_access_token({"sub": user.email})
+    return {"access_token": token, "token_type": "bearer"}

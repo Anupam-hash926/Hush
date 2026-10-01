@@ -5,7 +5,6 @@ services:
       - "6379:6379"
 
   neo4j:
-    # YOUR TURN: Fill in the configuration for Neo4j here
     image: neo4j:latest
     ports:
       - "7474:7474"
