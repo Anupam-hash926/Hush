@@ -1,5 +1,5 @@
-from fastapi import FastAPI, HTTPException
-from app.security import get_password_hash, verify_password, create_access_token
+from fastapi import FastAPI, HTTPException, Depends
+from app.security import get_password_hash, verify_password, create_access_token, get_current_user
 from app.schemas import UserCreate, UserLogin, Token
 from app.crud import create_user_in_db, get_user_by_email
 
@@ -28,3 +28,7 @@ async def login(user: UserLogin):
         
     token = create_access_token({"sub": user.email})
     return {"access_token": token, "token_type": "bearer"}
+
+@app.get("/me")
+async def read_current_user(current_user: str = Depends(get_current_user)):
+    return {"message": "You are authenticated!", "user": current_user}
