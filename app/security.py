@@ -3,8 +3,11 @@ import jwt
 from datetime import datetime, timedelta, timezone
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import os
+from dotenv import load_dotenv
 
-SECRET_KEY = "hush-super-secret-key"
+load_dotenv()
+SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 
 security_scheme = HTTPBearer()

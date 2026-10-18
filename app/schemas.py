@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from typing import Literal
 
 class UserCreate(BaseModel):
     email:str
@@ -11,3 +12,11 @@ class UserLogin(BaseModel):
 class Token(BaseModel):
     access_token:str
     token_type:str
+
+class ProjectCreate(BaseModel):
+    name:str
+    description:str|None=None
+
+class ProjectMember(BaseModel):
+     target_email:str
+     role:Literal["viewer", "editor"] = "viewer"

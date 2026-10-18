@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends
 from app.security import get_password_hash, verify_password, create_access_token, get_current_user
-from app.schemas import UserCreate, UserLogin, Token
-from app.crud import create_user_in_db, get_user_by_email
+from app.schemas import UserCreate, UserLogin, Token, ProjectCreate, ProjectMember
+from app.crud import create_user_in_db, get_user_by_email, create_project_in_db, share_project_in_db,get_user_projects_from_db
 
 app = FastAPI(title="Hush API")
 
@@ -32,3 +32,24 @@ async def login(user: UserLogin):
 @app.get("/me")
 async def read_current_user(current_user: str = Depends(get_current_user)):
     return {"message": "You are authenticated!", "user": current_user}
+
+@app.post("/projects")
+async def create_project(project:ProjectCreate,current_user:str = Depends(get_current_user)):
+    new_project=create_project_in_db(current_user,project.name,project.description)
+    if not new_project :
+        raise HTTPException(status_code=404,detail="Owner user not found")
+    return {"message":"Project created","project":new_project}
+
+@app.post("/projects/{project_id}/share")
+async def share_project(project_id: str,member:ProjectMember,current_user: str = Depends(get_current_user)):
+    shared_result=share_project_in_db(current_user,project_id,member.target_email,member.role)
+    if not shared_result:
+        raise HTTPException(status_code=400,detail="Invalid project or target user")
+    return{"message":"Access granted","details":shared_result}
+
+@app.get("/projects")
+async def get_projects(current_user: str = Depends(get_current_user)):
+    user_projects = get_user_projects_from_db(current_user)
+    if not user_projects:
+        raise HTTPException(status_code=404,detail="No projects found!")
+    return{"projects":user_projects}
