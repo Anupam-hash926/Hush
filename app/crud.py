@@ -77,3 +77,32 @@ def get_user_projects_from_db(email:str):
         result=session.run(query,email=email)
         projects=result.data()
         return projects
+
+def create_secret_in_db(email: str, project_id: str, key_name: str, encrypted_data: dict):
+    with neo4j_driver.session() as session:
+        query = """
+        MATCH (u:User {email: $email})-[r:OWNS|HAS_ACCESS]->(p:Project {id: $project_id})
+        CREATE (s:Secret {
+            id: randomUUID(),
+            key_name: $key_name,
+            salt: $salt,
+            nonce: $nonce,
+            ciphertext: $ciphertext
+        })
+        CREATE (p)-[:CONTAINS]->(s)
+        RETURN s.id AS id, s.key_name AS key_name
+        """    
+        result = session.run(query,email=email,project_id=project_id,key_name=key_name,salt=encrypted_data["salt"],nonce=encrypted_data["nonce"],ciphertext=encrypted_data["ciphertext"])
+        record = result.single()
+        if not record:
+            return None
+        return {"id":record["id"],"key_name":record["key_name"]}
+
+def get_project_secrets_from_db(email: str, project_id: str):
+    with neo4j_driver.session() as session:
+        query = """
+        MATCH (u:User {email: $email})-[r:OWNS|HAS_ACCESS]->(p:Project {id: $project_id})-[:CONTAINS]->(s:Secret)
+        RETURN s.id AS id, s.key_name AS key_name, s.salt AS salt, s.nonce AS nonce, s.ciphertext AS ciphertext
+        """
+        result = session.run(query,email=email,project_id=project_id)
+        return result.data()

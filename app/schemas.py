@@ -20,3 +20,12 @@ class ProjectCreate(BaseModel):
 class ProjectMember(BaseModel):
      target_email:str
      role:Literal["viewer", "editor"] = "viewer"
+class SecretCreate(BaseModel):
+    key_name: str
+    secret_value: str
+    vault_password: str
+class SecretDecrypt(BaseModel):
+    vault_password:str
+class SecretResponse(BaseModel):
+    id:str
+    key_name:str
