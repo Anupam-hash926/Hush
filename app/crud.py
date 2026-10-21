@@ -4,11 +4,7 @@ import uuid
 
 def create_user_in_db(email: str, hashed_password: str):
 
-    query = """
-    MERGE (u:User {email: $email})
-    ON CREATE SET u.password_hash = $password_hash
-    RETURN u.email AS email
-    """
+   
       
     with neo4j_driver.session() as session:
         check_query = "MATCH (u:User {email: $email}) RETURN u.email AS email"
@@ -82,6 +78,7 @@ def create_secret_in_db(email: str, project_id: str, key_name: str, encrypted_da
     with neo4j_driver.session() as session:
         query = """
         MATCH (u:User {email: $email})-[r:OWNS|HAS_ACCESS]->(p:Project {id: $project_id})
+        WHERE type(r) = 'OWNS' OR r.role = 'editor'
         CREATE (s:Secret {
             id: randomUUID(),
             key_name: $key_name,

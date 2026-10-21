@@ -10,7 +10,7 @@ neo4j_password = os.getenv("NEO4J_PASSWORD")
 AUTH=(neo4j_user,neo4j_password)
 
 neo4j_driver=GraphDatabase.driver(neo4j_uri,auth=AUTH)
-#neo4j_driver.verify_connectivity()
+neo4j_driver.verify_connectivity()
 
 redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
 redis_client=redis.Redis.from_url(redis_url)

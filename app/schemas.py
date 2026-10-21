@@ -23,9 +23,6 @@ class ProjectMember(BaseModel):
 class SecretCreate(BaseModel):
     key_name: str
     secret_value: str
-    vault_password: str
-class SecretDecrypt(BaseModel):
-    vault_password:str
 class SecretResponse(BaseModel):
     id:str
     key_name:str

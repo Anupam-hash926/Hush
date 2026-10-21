@@ -2,6 +2,9 @@ import os
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from dotenv import load_dotenv
+load_dotenv()
+MASTER_SECRET_KEY=os.getenv("MASTER_SECRET_KEY")
 def derive_key(password: str, salt: bytes)-> bytes:
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
@@ -10,9 +13,9 @@ def derive_key(password: str, salt: bytes)-> bytes:
         iterations=600000,
     )
     return kdf.derive(password.encode('utf-8'))
-def encrypt_secret(plain_text: str, password:str) -> dict:
+def encrypt_secret(plain_text: str) -> dict:
     salt = os.urandom(16)
-    key = derive_key(password, salt)
+    key = derive_key(MASTER_SECRET_KEY, salt)
     nonce = os.urandom(12)
     aesgcm = AESGCM(key)
     ciphertext = aesgcm.encrypt(nonce,plain_text.encode('utf-8'),None)
@@ -21,11 +24,11 @@ def encrypt_secret(plain_text: str, password:str) -> dict:
         "nonce": nonce.hex(),
         "ciphertext": ciphertext.hex()
     }
-def decrypt_secret(encrypted_data: dict, password: str) -> str:
+def decrypt_secret(encrypted_data: dict) -> str:
     salt = bytes.fromhex(encrypted_data["salt"])
     nonce = bytes.fromhex(encrypted_data["nonce"])
     ciphertext = bytes.fromhex(encrypted_data["ciphertext"])
-    key = derive_key(password, salt)
+    key = derive_key(MASTER_SECRET_KEY, salt)
     aesgcm = AESGCM(key)
     decrypted_bytes = aesgcm.decrypt(nonce, ciphertext, None)
     return decrypted_bytes.decode('utf-8')
@@ -37,11 +40,11 @@ if __name__ == "__main__":
     print("Running cryptographic sanity check...")
     
     # Encrypt
-    encrypted_payload = encrypt_secret(test_secret, test_password)
+    encrypted_payload = encrypt_secret(test_secret)
     print(f"Encrypted Output Payload: {encrypted_payload}")
 
     # Decrypt
-    decrypted_output = decrypt_secret(encrypted_payload, test_password)
+    decrypted_output = decrypt_secret(encrypted_payload)
     print(f"Decrypted Output String:  {decrypted_output}")
 
     # Verify matching result
