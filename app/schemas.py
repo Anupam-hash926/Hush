@@ -23,6 +23,9 @@ class ProjectMember(BaseModel):
 class SecretCreate(BaseModel):
     key_name: str
     secret_value: str
+    quorum_size:int=1
+    access_window_hours:int=24
+    max_views:int=1
 class SecretResponse(BaseModel):
     id:str
     key_name:str

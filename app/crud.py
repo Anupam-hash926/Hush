@@ -2,10 +2,7 @@ from app.database import neo4j_driver
 import uuid
 
 
-def create_user_in_db(email: str, hashed_password: str):
-
-   
-      
+def create_user_in_db(email: str, hashed_password: str):  
     with neo4j_driver.session() as session:
         check_query = "MATCH (u:User {email: $email}) RETURN u.email AS email"
         existing = session.run(check_query, email=email).single()
@@ -74,7 +71,7 @@ def get_user_projects_from_db(email:str):
         projects=result.data()
         return projects
 
-def create_secret_in_db(email: str, project_id: str, key_name: str, encrypted_data: dict):
+def create_secret_in_db(email: str, project_id: str, key_name: str, encrypted_data: dict,quorum_size:int,access_window_hours:int,max_views:int):
     with neo4j_driver.session() as session:
         query = """
         MATCH (u:User {email: $email})-[r:OWNS|HAS_ACCESS]->(p:Project {id: $project_id})
@@ -84,12 +81,16 @@ def create_secret_in_db(email: str, project_id: str, key_name: str, encrypted_da
             key_name: $key_name,
             salt: $salt,
             nonce: $nonce,
-            ciphertext: $ciphertext
+            ciphertext: $ciphertext,
+            quorum_size:$quorum_size,
+            access_window_hours: $access_window_hours,
+            max_views: $max_views
         })
         CREATE (p)-[:CONTAINS]->(s)
         RETURN s.id AS id, s.key_name AS key_name
         """    
-        result = session.run(query,email=email,project_id=project_id,key_name=key_name,salt=encrypted_data["salt"],nonce=encrypted_data["nonce"],ciphertext=encrypted_data["ciphertext"])
+        result = session.run(query,email=email,project_id=project_id,key_name=key_name,salt=encrypted_data["salt"],nonce=encrypted_data["nonce"],ciphertext=encrypted_data["ciphertext"],
+                             quorum_size=quorum_size,access_window_hours=access_window_hours,max_views=max_views)
         record = result.single()
         if not record:
             return None

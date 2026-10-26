@@ -59,7 +59,7 @@ def get_projects(current_user: str = Depends(get_current_user)):
 @app.post("/projects/{project_id}/secrets", response_model=SecretResponse)
 def add_secret(project_id: str, secret: SecretCreate, current_user: str = Depends(get_current_user)):
     encrypted_data = encrypt_secret(secret.secret_value)
-    saved_secret = create_secret_in_db(current_user,project_id,secret.key_name,encrypted_data)
+    saved_secret = create_secret_in_db(current_user,project_id,secret.key_name,encrypted_data,secret.quorum_size,secret.access_window_hours,secret.max_views)
     if not saved_secret:
         raise HTTPException(status_code=403,detail="User lacks access or project doesn't exist")
     return saved_secret
