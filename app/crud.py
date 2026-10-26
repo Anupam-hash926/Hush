@@ -104,3 +104,21 @@ def get_project_secrets_from_db(email: str, project_id: str):
         """
         result = session.run(query,email=email,project_id=project_id)
         return result.data()
+
+def create_access_request_in_neo4j(email: str, project_id: str, secret_id: str) -> dict | None:
+    """
+    Creates a [:REQUESTED] edge between the User and the Secret if the user has project access.
+    """
+    with neo4j_driver.session() as session:
+        query = """
+        MATCH (u:User {email: $email})-[r:OWNS|HAS_ACCESS]->(p:Project {id: $project_id})-[:CONTAINS]->(s:Secret {id: $secret_id})
+        MERGE (u)-[req:REQUESTED]->(s)
+        SET req.status = 'pending'
+        RETURN s.quorum_size AS quorum_size, s.access_window_hours AS access_window_hours
+        """
+        result = session.run(query, email=email, project_id=project_id, secret_id=secret_id).single()
+        
+        if not result:
+            return None
+            
+        return result.data()

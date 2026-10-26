@@ -1,7 +1,7 @@
 import os
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
-import redis.asyncio as redis
+import redis
 
 load_dotenv()
 neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")

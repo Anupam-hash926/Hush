@@ -1,8 +1,9 @@
 from fastapi import FastAPI, HTTPException, Depends
 from app.security import get_password_hash, verify_password, create_access_token, get_current_user
 from app.schemas import UserCreate, UserLogin, Token, ProjectCreate, ProjectMember,SecretCreate,SecretResponse
-from app.crud import create_user_in_db, get_user_by_email, create_project_in_db, share_project_in_db,get_user_projects_from_db,create_secret_in_db,get_project_secrets_from_db
+from app.crud import create_user_in_db, get_user_by_email, create_project_in_db, share_project_in_db,get_user_projects_from_db,create_secret_in_db,get_project_secrets_from_db,create_access_request_in_neo4j
 from app.crypto import encrypt_secret, decrypt_secret
+from app.database import redis_client
 from cryptography.exceptions import InvalidTag
 
 app = FastAPI(title="Hush API")
@@ -92,3 +93,17 @@ def reveal_secrets(project_id: str, current_user: str = Depends(get_current_user
         raise HTTPException(status_code=401, detail="Invalid vault password or corrupted data")
         
     return {"secrets": decrypted_results}
+
+@app.post("/projects/{project_id}/secrets/{secret_id}/request")
+def request_secret_access(project_id: str, secret_id: str, current_user: str = Depends(get_current_user)):
+    """
+    Logs the access request in Neo4j and initializes the approval counter in Redis.
+    """
+    access_record = create_access_request_in_neo4j(current_user, project_id, secret_id)
+    if not access_record:
+        raise HTTPException(status_code=403, detail="Unauthorized or secret not found") 
+    ttl_in_seconds = access_record["access_window_hours"] * 3600  
+    redis_key = f"request:{secret_id}:{current_user}:approvals"  
+    redis_client.set(name=redis_key, value=0, ex=ttl_in_seconds, nx=True)  
+    return {"message": "Access request initiated", "status": "pending"}
+    
