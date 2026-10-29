@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends
 from app.security import get_password_hash, verify_password, create_access_token, get_current_user
-from app.schemas import UserCreate, UserLogin, Token, ProjectCreate, ProjectMember,SecretCreate,SecretResponse
-from app.crud import create_user_in_db, get_user_by_email, create_project_in_db, share_project_in_db,get_user_projects_from_db,create_secret_in_db,get_project_secrets_from_db,create_access_request_in_neo4j
+from app.schemas import UserCreate, UserLogin, Token, ProjectCreate, ProjectMember,SecretCreate,SecretResponse,ApprovalRequest
+from app.crud import create_user_in_db, get_user_by_email, create_project_in_db, share_project_in_db,get_user_projects_from_db,create_secret_in_db,get_project_secrets_from_db,create_access_request_in_neo4j,get_secret_for_approval,reject_secret_request_in_db
 from app.crypto import encrypt_secret, decrypt_secret
 from app.database import redis_client
 from cryptography.exceptions import InvalidTag
@@ -96,9 +96,6 @@ def reveal_secrets(project_id: str, current_user: str = Depends(get_current_user
 
 @app.post("/projects/{project_id}/secrets/{secret_id}/request")
 def request_secret_access(project_id: str, secret_id: str, current_user: str = Depends(get_current_user)):
-    """
-    Logs the access request in Neo4j and initializes the approval counter in Redis.
-    """
     access_record = create_access_request_in_neo4j(current_user, project_id, secret_id)
     if not access_record:
         raise HTTPException(status_code=403, detail="Unauthorized or secret not found") 
@@ -106,4 +103,41 @@ def request_secret_access(project_id: str, secret_id: str, current_user: str = D
     redis_key = f"request:{secret_id}:{current_user}:approvals"  
     redis_client.set(name=redis_key, value=0, ex=ttl_in_seconds, nx=True)  
     return {"message": "Access request initiated", "status": "pending"}
-    
+
+@app.post("/projects/{project_id}/secrets/{secret_id}/approve")
+def approve_secret_request(project_id: str, secret_id: str, approval: ApprovalRequest, current_user: str = Depends(get_current_user)):
+    secret_data = get_secret_for_approval(current_user, approval.target_email, project_id, secret_id)
+    if not secret_data:
+        raise HTTPException(status_code=403, detail="Unauthorized, or no pending request found")
+    redis_key = f"request:{secret_id}:{approval.target_email}:approvals"
+    if not redis_client.exists(redis_key):
+        raise HTTPException(status_code=400, detail="Access request has expired or does not exist.")
+        
+    current_approvals = redis_client.incr(redis_key)
+    if current_approvals >= secret_data["quorum_size"]:
+        crypto_dict = {
+            "salt": secret_data["salt"],
+            "nonce": secret_data["nonce"],
+            "ciphertext": secret_data["ciphertext"]
+        }
+        plaintext = decrypt_secret(crypto_dict)       
+        return {
+            "status": "approved",
+            "message": "Quorum reached.",
+            "secret_value": plaintext
+        }
+    return {
+        "status": "pending",
+        "message": f"Approval logged. {current_approvals}/{secret_data['quorum_size']} approvals reached."
+    }
+@app.post("/projects/{project_id}/secrets/{secret_id}/reject")
+def reject_secret_request(project_id: str, secret_id: str, approval: ApprovalRequest, current_user: str = Depends(get_current_user)):
+    success = reject_secret_request_in_db(current_user, approval.target_email, project_id, secret_id)    
+    if not success:
+        raise HTTPException(status_code=403, detail="Unauthorized, or no pending request found")
+    redis_key = f"request:{secret_id}:{approval.target_email}:approvals"
+    redis_client.delete(redis_key)    
+    return {
+        "status": "rejected",
+        "message": f"Access request from {approval.target_email} denied."
+    }

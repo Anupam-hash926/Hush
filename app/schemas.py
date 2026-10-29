@@ -29,3 +29,5 @@ class SecretCreate(BaseModel):
 class SecretResponse(BaseModel):
     id:str
     key_name:str
+class ApprovalRequest(BaseModel):
+    target_email:str

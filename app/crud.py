@@ -106,9 +106,6 @@ def get_project_secrets_from_db(email: str, project_id: str):
         return result.data()
 
 def create_access_request_in_neo4j(email: str, project_id: str, secret_id: str) -> dict | None:
-    """
-    Creates a [:REQUESTED] edge between the User and the Secret if the user has project access.
-    """
     with neo4j_driver.session() as session:
         query = """
         MATCH (u:User {email: $email})-[r:OWNS|HAS_ACCESS]->(p:Project {id: $project_id})-[:CONTAINS]->(s:Secret {id: $secret_id})
@@ -122,3 +119,47 @@ def create_access_request_in_neo4j(email: str, project_id: str, secret_id: str) 
             return None
             
         return result.data()
+
+def get_secret_for_approval(editor_email:str,target_email:str,project_id:str,secret_id:str) -> dict | None:
+    with neo4j_driver.session() as session:
+        query="""
+        MATCH (editor:User {email: $editor_email})-[r1:OWNS|HAS_ACCESS]->(p:Project {id: $project_id})-[:CONTAINS]->(s:Secret {id: $secret_id})
+        WHERE type(r1) = 'OWNS' or r1.role='editor'
+        MATCH (target:User {email: $target_email})-[req:REQUESTED]->(s)
+        WHERE req.status = 'pending'
+        RETURN s.quorum_size AS quorum_size, s.salt AS salt, s.nonce AS nonce, s.ciphertext AS ciphertext
+        """
+        result = session.run(
+            query, 
+            editor_email=editor_email, 
+            target_email=target_email, 
+            project_id=project_id, 
+            secret_id=secret_id
+        ).single()
+        if not result:
+            return None
+        return result.data()
+def reject_secret_request_in_db(editor_email: str, target_email: str, project_id: str, secret_id: str) -> bool:
+    """
+    Verifies the editor's authority and updates the pending request status to 'rejected'.
+    """
+    with neo4j_driver.session() as session:
+        query = """
+        MATCH (editor:User {email: $editor_email})-[r1:OWNS|HAS_ACCESS]->(p:Project {id: $project_id})-[:CONTAINS]->(s:Secret {id: $secret_id})
+        WHERE type(r1) = 'OWNS' OR r1.role = 'editor'
+        
+        MATCH (target:User {email: $target_email})-[req:REQUESTED]->(s)
+        WHERE req.status = 'pending'
+        
+        SET req.status = 'rejected'
+        RETURN req
+        """
+        result = session.run(
+            query, 
+            editor_email=editor_email, 
+            target_email=target_email, 
+            project_id=project_id, 
+            secret_id=secret_id
+        ).single()
+        
+        return bool(result)
