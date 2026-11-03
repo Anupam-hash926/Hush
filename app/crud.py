@@ -163,3 +163,29 @@ def reject_secret_request_in_db(editor_email: str, target_email: str, project_id
         ).single()
         
         return bool(result)
+
+def mark_request_approved_in_db(target_email: str, secret_id: str) -> bool:
+    """
+    Updates the pending request to 'approved' once quorum is reached.
+    """
+    with neo4j_driver.session() as session:
+        query = """
+        MATCH (target:User {email: $target_email})-[req:REQUESTED]->(s:Secret {id: $secret_id})
+        SET req.status = 'approved'
+        RETURN req
+        """
+        result = session.run(query, target_email=target_email, secret_id=secret_id).single()
+        return bool(result)
+
+def get_secret_for_decryption(secret_id: str) -> dict | None:
+    """
+    Fetches the raw cryptography data for a secret by its ID.
+    """
+    with neo4j_driver.session() as session:
+        query = """
+        MATCH (s:Secret {id: $secret_id})
+        RETURN s.salt AS salt, s.nonce AS nonce, s.ciphertext AS ciphertext
+        """
+        result = session.run(query, secret_id=secret_id).single()
+        return result.data() if result else None
+
