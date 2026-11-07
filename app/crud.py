@@ -96,13 +96,14 @@ def create_secret_in_db(email: str, project_id: str, key_name: str, encrypted_da
             return None
         return {"id":record["id"],"key_name":record["key_name"]}
 
-def get_project_secrets_from_db(email: str, project_id: str):
+def get_project_secrets_metadata_from_db(email: str, project_id: str):
     with neo4j_driver.session() as session:
         query = """
         MATCH (u:User {email: $email})-[r:OWNS|HAS_ACCESS]->(p:Project {id: $project_id})-[:CONTAINS]->(s:Secret)
-        RETURN s.id AS id, s.key_name AS key_name, s.salt AS salt, s.nonce AS nonce, s.ciphertext AS ciphertext
+        RETURN s.id AS id, s.key_name AS key_name, s.quorum_size AS quorum_size, 
+               s.access_window_hours AS access_window_hours, s.max_views AS max_views
         """
-        result = session.run(query,email=email,project_id=project_id)
+        result = session.run(query, email=email, project_id=project_id)
         return result.data()
 
 def create_access_request_in_neo4j(email: str, project_id: str, secret_id: str) -> dict | None:
@@ -139,6 +140,7 @@ def get_secret_for_approval(editor_email:str,target_email:str,project_id:str,sec
         if not result:
             return None
         return result.data()
+
 def reject_secret_request_in_db(editor_email: str, target_email: str, project_id: str, secret_id: str) -> bool:
     """
     Verifies the editor's authority and updates the pending request status to 'rejected'.
@@ -165,27 +167,48 @@ def reject_secret_request_in_db(editor_email: str, target_email: str, project_id
         return bool(result)
 
 def mark_request_approved_in_db(target_email: str, secret_id: str) -> bool:
-    """
-    Updates the pending request to 'approved' once quorum is reached.
-    """
+    """Transitions a pending request to 'approved'."""
     with neo4j_driver.session() as session:
         query = """
         MATCH (target:User {email: $target_email})-[req:REQUESTED]->(s:Secret {id: $secret_id})
+        WHERE req.status = 'pending'
         SET req.status = 'approved'
         RETURN req
         """
         result = session.run(query, target_email=target_email, secret_id=secret_id).single()
         return bool(result)
 
-def get_secret_for_decryption(secret_id: str) -> dict | None:
+def mark_request_claimed_in_db(requester_email: str, secret_id: str) -> dict | None:
     """
-    Fetches the raw cryptography data for a secret by its ID.
+    Transitions an approved request to 'claimed' and fetches the access window.
+    Returns None if the request is not in the 'approved' state.
     """
     with neo4j_driver.session() as session:
         query = """
+        MATCH (target:User {email: $requester_email})-[req:REQUESTED]->(s:Secret {id: $secret_id})
+        WHERE req.status = 'approved'
+        SET req.status = 'claimed'
+        RETURN s.access_window_hours AS access_window_hours
+        """
+        result = session.run(query, requester_email=requester_email, secret_id=secret_id).single()
+        return result.data() if result else None
+    
+def get_request_status_from_db(requester_email: str, secret_id: str) -> dict | None:
+    """Fetches the current status of a user's request for a secret."""
+    with neo4j_driver.session() as session:
+        query = """
+         MATCH (target:User {email: $requester_email})-[req:REQUESTED]->(s:Secret {id: $secret_id})
+         RETURN req.status AS status, s.quorum_size AS quorum_size
+        """
+        result = session.run(query, requester_email=requester_email, secret_id=secret_id).single()
+        return result.data() if result else None
+
+def get_secret_for_decryption(secret_id: str) -> dict | None:
+    """Fetches the raw cryptography data and view limits for a secret."""
+    with neo4j_driver.session() as session:
+        query = """
         MATCH (s:Secret {id: $secret_id})
-        RETURN s.salt AS salt, s.nonce AS nonce, s.ciphertext AS ciphertext
+        RETURN s.salt AS salt, s.nonce AS nonce, s.ciphertext AS ciphertext, s.max_views AS max_views
         """
         result = session.run(query, secret_id=secret_id).single()
         return result.data() if result else None
-
