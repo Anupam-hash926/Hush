@@ -212,3 +212,23 @@ def get_secret_for_decryption(secret_id: str) -> dict | None:
         """
         result = session.run(query, secret_id=secret_id).single()
         return result.data() if result else None
+def revoke_request_in_db(owner_email: str, target_email: str, project_id: str, secret_id: str) -> bool:
+    """
+    Verifies owner authority and sets the target's request status to 'revoked'.
+    """
+    with neo4j_driver.session() as session:
+        query = """
+        MATCH (owner:User {email: $owner_email})-[r1:OWNS]->(p:Project {id: $project_id})-[:CONTAINS]->(s:Secret {id: $secret_id})
+        MATCH (target:User {email: $target_email})-[req:REQUESTED]->(s)
+        SET req.status = 'revoked'
+        RETURN req
+        """
+        result = session.run(
+            query, 
+            owner_email=owner_email, 
+            target_email=target_email, 
+            project_id=project_id, 
+            secret_id=secret_id
+        ).single()
+        
+        return bool(result)

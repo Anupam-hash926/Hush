@@ -150,6 +150,9 @@ def claim_approved_secret(project_id: str, secret_id: str, current_user: str = D
     token_key = f"vault_token:{access_token}"
     ttl_seconds = claim_data["access_window_hours"] * 3600
     redis_client.set(name=token_key, value=token_payload, ex=ttl_seconds)
+
+    reverse_index_key = f"active_token:{secret_id}:{current_user}"
+    redis_client.set(name=reverse_index_key, value=access_token, ex=ttl_seconds)
     
     return {
         "message": "Access token claimed successfully.",
@@ -232,4 +235,33 @@ def access_approved_secret(access_token: str, current_user: str = Depends(securi
         "message": "Access granted.",
         "views_remaining": views_remaining,
         "secret_value": plaintext
+    }
+
+@app.post("/projects/{project_id}/secrets/{secret_id}/revoke")
+def revoke_secret_access(project_id: str, secret_id: str, payload: schemas.ApprovalRequest, current_user: str = Depends(security.get_current_user)):
+    target_email = payload.target_email
+    
+    # 1. Update Neo4j state to 'revoked' and enforce Owner-only access
+    success = crud.revoke_request_in_db(current_user, target_email, project_id, secret_id)
+    if not success:
+        raise HTTPException(status_code=403, detail="Unauthorized (must be project owner) or request not found")
+        
+    # 2. Build target keys
+    pending_key = f"request:{secret_id}:{target_email}:pending"
+    approvers_key = f"request:{secret_id}:{target_email}:approvers"
+    reverse_index_key = f"active_token:{secret_id}:{target_email}"
+    
+    # 3. Locate the live token via the reverse index
+    raw_access_token = redis_client.get(reverse_index_key)
+    if raw_access_token:
+        access_token = raw_access_token.decode("utf-8")
+        # Destroy the token and its atomic view counter immediately
+        redis_client.delete(f"vault_token:{access_token}", f"views:{access_token}")
+        
+    # 4. Sweep remaining state (reverse index + any pending/approval keys)
+    redis_client.delete(pending_key, approvers_key, reverse_index_key)
+    
+    return {
+        "status": "revoked",
+        "message": f"All access and pending requests for {target_email} have been immediately terminated."
     }
