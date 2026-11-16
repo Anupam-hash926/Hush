@@ -278,6 +278,30 @@ def revoke_secret_access(project_id: str, secret_id: str, payload: schemas.Appro
         "message": f"All access and pending requests for {target_email} have been immediately terminated."
     }
 
+@app.post("/projects/{project_id}/reviewers")
+def assign_reviewer(project_id: str, payload: schemas.ReviewerAssign, current_user: str = Depends(security.get_current_user)):
+    success = crud.assign_reviewer_in_db(current_user, project_id, payload.target_email)
+    if not success:
+        raise HTTPException(status_code=403, detail="Unauthorized (must be owner) or target user not found.")
+    
+    crud.log_event(current_user, "REVIEWER_ASSIGNED", secret_id="N/A", project_id=project_id, target_email=payload.target_email)
+    return {"message": f"{payload.target_email} is now a reviewer for this project."}
+
+@app.get("/projects/{project_id}/secrets/{secret_id}/approvers")
+def discover_eligible_approvers(project_id: str, secret_id: str, current_user: str = Depends(security.get_current_user)):
+    """
+    Dynamic graph discovery endpoint. 
+    The frontend calls this so a requester knows exactly who is allowed to approve their request.
+    """
+    approvers = crud.get_eligible_approvers_from_db(project_id)
+    if not approvers:
+        raise HTTPException(status_code=404, detail="Project not found or no approvers available.")
+        
+    return {
+        "project_id": project_id,
+        "eligible_approvers": approvers
+    }
+
 # --- STEP 7: AUDIT LOG ENDPOINT ---
 @app.get("/projects/{project_id}/secrets/{secret_id}/audit")
 def get_secret_audit_log(project_id: str, secret_id: str, skip: int = 0, limit: int = 50, current_user: str = Depends(security.get_current_user)):

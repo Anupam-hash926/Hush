@@ -31,3 +31,5 @@ class SecretResponse(BaseModel):
     key_name:str
 class ApprovalRequest(BaseModel):
     target_email:str
+class ReviewerAssign(BaseModel):
+    target_email: str
