@@ -1,5 +1,6 @@
 from app.database import neo4j_driver
 import uuid
+import time
 
 def create_user_in_db(email: str, hashed_password: str):  
     with neo4j_driver.session() as session:
@@ -130,46 +131,29 @@ def create_access_request_in_neo4j(email: str, project_id: str, secret_id: str) 
         
         return result["request_id"] if result else None
 
-def get_secret_for_approval(editor_email:str, target_email:str, project_id:str, secret_id:str) -> dict | None:
+def get_secret_for_approval(editor_email: str, target_email: str, project_id: str, secret_id: str) -> dict | None:
     with neo4j_driver.session() as session:
-        query="""
-        MATCH (editor:User {email: $editor_email})-[r1:OWNS|HAS_ACCESS]->(p:Project {id: $project_id})-[:CONTAINS]->(s:Secret {id: $secret_id})
-        WHERE type(r1) = 'OWNS' or r1.role='editor'
+        query = """
+        MATCH (editor:User {email: $editor_email})-[r1:OWNS|HAS_ACCESS|REVIEWER_OF]->(p:Project {id: $project_id})-[:CONTAINS]->(s:Secret {id: $secret_id})
+        WHERE type(r1) IN ['OWNS', 'REVIEWER_OF'] OR r1.role = 'editor'
         MATCH (target:User {email: $target_email})-[:MADE]->(req:AccessRequest)-[:FOR]->(s)
         WHERE req.status = 'pending'
         RETURN s.quorum_size AS quorum_size, s.salt AS salt, s.nonce AS nonce, s.ciphertext AS ciphertext
         """
-        result = session.run(
-            query, 
-            editor_email=editor_email, 
-            target_email=target_email, 
-            project_id=project_id, 
-            secret_id=secret_id
-        ).single()
-        if not result:
-            return None
-        return result.data()
+        result = session.run(query, editor_email=editor_email, target_email=target_email, project_id=project_id, secret_id=secret_id).single()
+        return result.data() if result else None
 
 def reject_secret_request_in_db(editor_email: str, target_email: str, project_id: str, secret_id: str) -> bool:
     with neo4j_driver.session() as session:
         query = """
-        MATCH (editor:User {email: $editor_email})-[r1:OWNS|HAS_ACCESS]->(p:Project {id: $project_id})-[:CONTAINS]->(s:Secret {id: $secret_id})
-        WHERE type(r1) = 'OWNS' OR r1.role = 'editor'
-        
+        MATCH (editor:User {email: $editor_email})-[r1:OWNS|HAS_ACCESS|REVIEWER_OF]->(p:Project {id: $project_id})-[:CONTAINS]->(s:Secret {id: $secret_id})
+        WHERE type(r1) IN ['OWNS', 'REVIEWER_OF'] OR r1.role = 'editor'
         MATCH (target:User {email: $target_email})-[:MADE]->(req:AccessRequest)-[:FOR]->(s)
         WHERE req.status = 'pending'
-        
         SET req.status = 'rejected'
         RETURN req
         """
-        result = session.run(
-            query, 
-            editor_email=editor_email, 
-            target_email=target_email, 
-            project_id=project_id, 
-            secret_id=secret_id
-        ).single()
-        
+        result = session.run(query, editor_email=editor_email, target_email=target_email, project_id=project_id, secret_id=secret_id).single()
         return bool(result)
 
 def mark_request_approved_in_db(target_email: str, secret_id: str) -> bool:
@@ -275,3 +259,42 @@ def get_audit_log(owner_email: str, project_id: str, secret_id: str, limit: int 
         SKIP $skip LIMIT $limit
         """
         return session.run(query, owner_email=owner_email, project_id=project_id, secret_id=secret_id, limit=limit, skip=skip).data()
+
+def assign_reviewer_in_db(owner_email: str, project_id: str, target_email: str) -> bool:
+    """Creates a dedicated REVIEWER_OF relationship for a user."""
+    with neo4j_driver.session() as session:
+        query = """
+        MATCH (owner:User {email: $owner_email})-[:OWNS]->(p:Project {id: $project_id})
+        MATCH (target:User {email: $target_email})
+        MERGE (target)-[r:REVIEWER_OF]->(p)
+        RETURN target
+        """
+        result = session.run(query, owner_email=owner_email, project_id=project_id, target_email=target_email).single()
+        return bool(result)
+
+def get_eligible_approvers_from_db(project_id: str) -> list[str]:
+    """Graph traversal to discover all users dynamically authorized to approve requests."""
+    with neo4j_driver.session() as session:
+        query = """
+        MATCH (u:User)-[r:OWNS|HAS_ACCESS|REVIEWER_OF]->(p:Project {id: $project_id})
+        WHERE type(r) IN ['OWNS', 'REVIEWER_OF'] OR r.role = 'editor'
+        RETURN collect(DISTINCT u.email) as approvers
+        """
+        result = session.run(query, project_id=project_id).single()
+        return result["approvers"] if result else []
+
+def evaluate_sorted_set_quorum(redis_client, secret_id: str, requester_email: str, quorum_size: int) -> tuple[int, bool]:
+    """
+    Cleans expired approvals using Redis ZREMRANGEBYSCORE and counts live ones using ZCOUNT.
+    Returns (current_live_approvals, quorum_reached_boolean).
+    """
+    approvals_key = f"approvals:{secret_id}:{requester_email}"
+    now = time.time()
+    
+    # 1. Remove expired approvals from the sorted set
+    redis_client.zremrangebyscore(approvals_key, 0, now)
+    
+    # 2. Count remaining valid approvals (scores from 'now' to infinity)
+    live_count = redis_client.zcount(approvals_key, now, "+inf")
+    
+    return live_count, live_count >= quorum_size

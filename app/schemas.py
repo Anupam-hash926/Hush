@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Literal
 
 class UserCreate(BaseModel):
@@ -30,6 +30,7 @@ class SecretResponse(BaseModel):
     id:str
     key_name:str
 class ApprovalRequest(BaseModel):
-    target_email:str
+    target_email: str
+    approval_validity_seconds: int = Field(default=86400, ge=1)
 class ReviewerAssign(BaseModel):
     target_email: str

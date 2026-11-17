@@ -4,6 +4,7 @@ from app import security, schemas, crud, crypto
 from app.database import redis_client
 import secrets
 import json
+from time import time
 
 app = FastAPI(title="Hush API")
 
@@ -119,27 +120,33 @@ def approve_secret_request(project_id: str, secret_id: str, approval: schemas.Ap
         raise HTTPException(status_code=403, detail="Unauthorized, or no pending request found")
     
     pending_key = f"request:{secret_id}:{target_email}:pending"
-    approvers_key = f"request:{secret_id}:{target_email}:approvers"
+    # Note the key name change to 'approvals' to match the sorted set convention
+    approvals_key = f"approvals:{secret_id}:{target_email}"
     
     if not redis_client.exists(pending_key):
         raise HTTPException(status_code=400, detail="Access request has expired or does not exist.")
-        
-    redis_client.sadd(approvers_key, current_user)
+    
+    # --- STEP 9: APPROVER-DEFINED EXPIRY (Sorted Sets) ---
+    expiry_score = time() + approval.approval_validity_seconds
+    
+    # SADD is replaced with ZADD
+    redis_client.zadd(approvals_key, {current_user: expiry_score})
     
     remaining_ttl = redis_client.ttl(pending_key)
     if remaining_ttl > 0:
-        redis_client.expire(approvers_key, remaining_ttl)
+        redis_client.expire(approvals_key, remaining_ttl)
         
-    current_approvals = redis_client.scard(approvers_key)
+    # SCARD is replaced with your new live-counting helper
+    live_count, quorum_reached = crud.evaluate_sorted_set_quorum(
+        redis_client, secret_id, target_email, secret_data["quorum_size"]
+    )
     
-    # Step 7: Log approval
     crud.log_event(current_user, "APPROVED", secret_id, project_id, target_email)
     
-    if current_approvals >= secret_data["quorum_size"]:
+    if quorum_reached:
         crud.mark_request_approved_in_db(target_email, secret_id)
-        redis_client.delete(pending_key, approvers_key)
+        redis_client.delete(pending_key, approvals_key)
         
-        # Step 7: Log quorum state transition
         crud.log_event(current_user, "QUORUM_REACHED", secret_id, project_id, target_email)
         return {
             "status": "approved",
@@ -147,7 +154,7 @@ def approve_secret_request(project_id: str, secret_id: str, approval: schemas.Ap
         }       
     return {
         "status": "pending",
-        "message": f"Approval logged. {current_approvals}/{secret_data['quorum_size']} unique approvals reached."
+        "message": f"Approval logged. {live_count}/{secret_data['quorum_size']} live valid approvals."
     }
 
 @app.post("/projects/{project_id}/secrets/{secret_id}/claim")
@@ -187,8 +194,21 @@ def get_request_status(project_id: str, secret_id: str, current_user: str = Depe
     }
     
     if status_data["status"] == "pending":
-        approvers_key = f"request:{secret_id}:{current_user}:approvers"
-        response["current_approvals"] = redis_client.scard(approvers_key)
+        # STEP 9: Read from the new Sorted Set
+        approvals_key = f"approvals:{secret_id}:{current_user}"
+        now = time()
+        
+        # Clean expired ones dynamically on read
+        redis_client.zremrangebyscore(approvals_key, 0, now)
+        
+        # Fetch remaining valid members
+        live_approvers = redis_client.zrange(approvals_key, 0, -1)
+        
+        # Decode bytes to strings if necessary
+        decoded_approvers = [a.decode("utf-8") if isinstance(a, bytes) else a for a in live_approvers]
+        
+        response["current_live_approvals"] = len(decoded_approvers)
+        response["live_approvers"] = decoded_approvers
         
     return response
 
