@@ -23,14 +23,15 @@ class ProjectMember(BaseModel):
 class SecretCreate(BaseModel):
     key_name: str
     secret_value: str
-    quorum_size:int=1
-    access_window_hours:int=24
-    max_views:int=1
+    quorum_size: int = Field(default=1, ge=1)
+    access_window_hours: int = Field(default=24, ge=1)
+    max_views: int = Field(default=1, ge=1)
 class SecretResponse(BaseModel):
     id:str
     key_name:str
 class ApprovalRequest(BaseModel):
     target_email: str
     approval_validity_seconds: int = Field(default=86400, ge=1)
+    request_id: str | None = None
 class ReviewerAssign(BaseModel):
     target_email: str

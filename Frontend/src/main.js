@@ -15,6 +15,11 @@ const state = {
   selectedProjectId: "",
   section: "overview",
   secrets: {},
+  secretStatuses: {},
+  approvers: {},
+  inbox: [],
+  vaultLoading: false,
+  inboxLoading: false,
   modal: null,
   drawerOpen: false,
   toast: null,
@@ -34,6 +39,15 @@ const escapeHtml = (value = "") =>
 const selectedProject = () =>
   state.projects.find((project) => project.id === state.selectedProjectId);
 
+const projectRoleLabel = (project) => {
+  if (!project) return "";
+  if (project.access_type === "OWNS") return "Owner";
+  if (project.role) {
+    return project.role.charAt(0).toUpperCase() + project.role.slice(1);
+  }
+  return "Shared";
+};
+
 function notify(message, type = "success") {
   state.toast = { message, type };
   render();
@@ -49,6 +63,9 @@ function clearSession(route = "home") {
   state.projects = [];
   state.selectedProjectId = "";
   state.secrets = {};
+  state.secretStatuses = {};
+  state.approvers = {};
+  state.inbox = [];
   state.route = route;
   if (route === "auth") state.authMode = "login";
   state.drawerOpen = false;
@@ -88,7 +105,9 @@ async function api(path, options = {}) {
     if (response.status === 401 && state.token) {
       clearSession("auth");
     }
-    throw new Error(message);
+    const err = new Error(message);
+    err.status = response.status;
+    throw err;
   }
 
   return result;
@@ -107,6 +126,75 @@ async function loadProjects() {
   }
   if (!state.projects.some((project) => project.id === state.selectedProjectId)) {
     state.selectedProjectId = state.projects[0]?.id || "";
+  }
+}
+
+async function loadVault(projectId) {
+  if (!projectId) return;
+  state.vaultLoading = true;
+  render();
+
+  try {
+    let secretsList = [];
+    try {
+      const result = await api(`/projects/${encodeURIComponent(projectId)}/secrets`);
+      secretsList = result.secrets || [];
+    } catch (error) {
+      if (error.status === 404) {
+        secretsList = [];
+      } else {
+        throw error;
+      }
+    }
+    state.secrets[projectId] = secretsList;
+
+    await Promise.all(
+      secretsList.map(async (secret) => {
+        const existing = state.secretStatuses[secret.id] || {};
+        const reqQuery = existing.request_id
+          ? `?request_id=${encodeURIComponent(existing.request_id)}`
+          : "";
+        try {
+          const statusData = await api(
+            `/projects/${encodeURIComponent(projectId)}/secrets/${encodeURIComponent(secret.id)}/request-status${reqQuery}`
+          );
+          state.secretStatuses[secret.id] = {
+            ...statusData,
+            access_token: statusData.status === "claimed" ? existing.access_token || null : null,
+          };
+        } catch {
+          state.secretStatuses[secret.id] = { status: "none" };
+        }
+
+        try {
+          const approverData = await api(
+            `/projects/${encodeURIComponent(projectId)}/secrets/${encodeURIComponent(secret.id)}/approvers`
+          );
+          state.approvers[secret.id] = approverData.eligible_approvers || [];
+        } catch {
+          state.approvers[secret.id] = [];
+        }
+      })
+    );
+  } catch (error) {
+    notify(error.message, "error");
+  } finally {
+    state.vaultLoading = false;
+    render();
+  }
+}
+
+async function loadInbox() {
+  state.inboxLoading = true;
+  render();
+  try {
+    const result = await api("/approvals/inbox");
+    state.inbox = result.inbox || [];
+  } catch (error) {
+    notify(error.message, "error");
+  } finally {
+    state.inboxLoading = false;
+    render();
   }
 }
 
@@ -144,21 +232,21 @@ function renderHome() {
             <div class="visual-layout">
               <div class="visual-sidebar"><span class="visual-side-item selected"></span><span class="visual-side-item"></span><span class="visual-side-item"></span><span class="visual-side-item"></span></div>
               <div class="visual-content"><div class="visual-label">PRIVATE PROJECT</div><div class="visual-title">Product launch</div><div class="visual-description">Credentials for your team</div>
-                <div class="visual-secret"><span class="visual-key">K</span><div><strong>Production API key</strong><small>Revealed only when needed</small></div><span class="visual-hidden">••••••••••</span></div>
-                <div class="visual-access"><span class="visual-access-mark">✓</span><div><strong>Shared with care</strong><small>Project access is intentional</small></div></div>
+                <div class="visual-secret"><span class="visual-key">K</span><div><strong>Production API key</strong><small>Revealed only when approved</small></div><span class="visual-hidden">••••••••••</span></div>
+                <div class="visual-access"><span class="visual-access-mark">✓</span><div><strong>Shared with care</strong><small>Quorum-gated access</small></div></div>
               </div>
             </div>
           </div>
-          <div class="visual-note"><span class="visual-note-mark"><span></span></span><span><strong>Private by default</strong><small>Reveal when you choose</small></span></div>
+          <div class="visual-note"><span class="visual-note-mark"><span></span></span><span><strong>Private by default</strong><small>Claim when approved</small></span></div>
         </div>
       </section>
       <section class="home-principles" id="principles">
         <div class="principle-intro"><p class="eyebrow">A little more peace of mind</p><h2>Sensitive work,<br />without the noise.</h2><p>Less hunting through messages. More clarity around who can access what.</p></div>
         <article class="principle-card"><span class="principle-number">01</span><div class="principle-icon">${icon("folder")}</div><h3>One space per project</h3><p>Keep credentials organized alongside the work and people they belong to.</p></article>
-        <article class="principle-card"><span class="principle-number">02</span><div class="principle-icon">${icon("key")}</div><h3>Reveal when you need it</h3><p>Secret values stay hidden until you intentionally open the project vault.</p></article>
-        <article class="principle-card"><span class="principle-number">03</span><div class="principle-icon">${icon("users")}</div><h3>Share with intention</h3><p>Invite a teammate with a clear role and process access requests.</p></article>
+        <article class="principle-card"><span class="principle-number">02</span><div class="principle-icon">${icon("key")}</div><h3>Quorum-gated access</h3><p>Secret values stay encrypted until approvers sign off and you claim a one-time token.</p></article>
+        <article class="principle-card"><span class="principle-number">03</span><div class="principle-icon">${icon("users")}</div><h3>Share with intention</h3><p>Invite teammates with clear roles and review pending requests from your inbox.</p></article>
       </section>
-      <section class="home-how" id="how-it-works"><div><p class="eyebrow">GETTING STARTED</p><h2>Simple from the<br />very first project.</h2></div><div class="how-steps"><div class="how-step"><span>1</span><div><h3>Create your space</h3><p>Start a project for a team, service, or initiative.</p></div></div><div class="how-step"><span>2</span><div><h3>Add what matters</h3><p>Store sensitive values in a dedicated project vault.</p></div></div><div class="how-step"><span>3</span><div><h3>Bring in your team</h3><p>Share the project and set access with care.</p></div></div></div></section>
+      <section class="home-how" id="how-it-works"><div><p class="eyebrow">GETTING STARTED</p><h2>Simple from the<br />very first project.</h2></div><div class="how-steps"><div class="how-step"><span>1</span><div><h3>Create your space</h3><p>Start a project for a team, service, or initiative.</p></div></div><div class="how-step"><span>2</span><div><h3>Add what matters</h3><p>Store sensitive values with quorum and view limits.</p></div></div><div class="how-step"><span>3</span><div><h3>Bring in your team</h3><p>Share the project and approve requests from your inbox.</p></div></div></div></section>
       <footer class="home-footer"><a class="brand" href="#" data-action="home">${logo()}<span>hush</span></a><span>Private by design. Clear by default.</span><button type="button" class="text-button" data-action="open-auth" data-mode="register">Start with Hush <span aria-hidden="true">→</span></button></footer>
     </main>
     ${toastMarkup()}`;
@@ -188,10 +276,10 @@ function renderAuth(mode = state.authMode, error = "") {
           <p class="form-intro">${isRegister ? "It only takes a moment to set up." : "Enter your details to continue to your workspace."}</p>
           ${error ? `<div class="alert alert-error" role="alert">${escapeHtml(error)}</div>` : ""}
           <form id="auth-form" data-mode="${isRegister ? "register" : "login"}">
-            <label for="email">Email address</label>
-            <input id="email" name="email" type="email" autocomplete="email" placeholder="name@company.com" required />
-            <div class="password-label-row"><label for="password">Password</label>${isRegister ? `<span class="password-hint">Use at least 8 characters</span>` : ""}</div>
-            <input id="password" name="password" type="password" autocomplete="${isRegister ? "new-password" : "current-password"}" minlength="8" placeholder="${isRegister ? "Create a password" : "Enter your password"}" required />
+            <label for="email">Email or username</label>
+            <input id="email" name="email" type="text" autocomplete="username" placeholder="name@company.com" required />
+            <div class="password-label-row"><label for="password">Password</label></div>
+            <input id="password" name="password" type="password" autocomplete="${isRegister ? "new-password" : "current-password"}" placeholder="${isRegister ? "Create a password" : "Enter your password"}" required />
             <button class="button button-primary button-wide auth-submit" type="submit">${isRegister ? "Create account" : "Continue"}<span aria-hidden="true">→</span></button>
           </form>
           <div class="auth-divider"><span>or</span></div>
@@ -247,7 +335,7 @@ function renderShell() {
         <div class="sidebar-bottom">
           <div class="sidebar-note">
             <span class="note-icon" aria-hidden="true">i</span>
-            <div><strong>Thoughtful by default</strong><p>Reveal sensitive values only when you need them.</p></div>
+            <div><strong>Quorum by default</strong><p>Secrets stay encrypted until approved and claimed.</p></div>
           </div>
           <button type="button" class="profile-button" data-action="open-drawer" aria-label="Open profile and settings">
             <span class="avatar">${escapeHtml((state.email[0] || "H").toUpperCase())}</span>
@@ -276,7 +364,7 @@ function renderDrawer() {
       <div class="drawer-profile"><span class="drawer-avatar">${escapeHtml((state.email[0] || "H").toUpperCase())}</span><div><strong>${escapeHtml(state.email)}</strong><small>Hush account</small></div></div>
       <section class="drawer-section"><p class="drawer-section-label">APPEARANCE</p><div class="drawer-setting"><div><strong>Display mode</strong><small>Choose the look that works for you.</small></div><button type="button" class="theme-switch ${state.theme === "dark" ? "is-on" : ""}" data-action="toggle-theme" aria-label="Switch to ${state.theme === "light" ? "dark" : "light"} mode" aria-pressed="${state.theme === "dark"}"><span></span></button></div><div class="drawer-mode-label">${state.theme === "light" ? "Bright mode" : "Dark mode"}<span>Saved on this device</span></div></section>
       <section class="drawer-section"><p class="drawer-section-label">WORKSPACE</p><button class="drawer-link" type="button" data-action="drawer-navigate" data-section="overview">${icon("grid")}<span>Overview</span></button><button class="drawer-link" type="button" data-action="drawer-navigate" data-section="projects">${icon("folder")}<span>Projects</span></button><button class="drawer-link" type="button" data-action="drawer-navigate" data-section="access">${icon("users")}<span>Shared access</span></button></section>
-      <section class="drawer-help"><strong>Need a hand?</strong><p>Hush keeps sensitive values out of view until you choose to reveal them.</p><button type="button" class="link-button" data-action="drawer-help">About Hush <span aria-hidden="true">→</span></button></section>
+      <section class="drawer-help"><strong>Need a hand?</strong><p>Hush keeps sensitive values encrypted until quorum is met and claimed.</p><button type="button" class="link-button" data-action="drawer-help">About Hush <span aria-hidden="true">→</span></button></section>
       <div class="drawer-footer"><button type="button" class="drawer-signout" data-action="confirm-sign-out"><span class="signout-icon" aria-hidden="true">↗</span> Sign out</button></div>
     </aside>
   </div>`;
@@ -289,7 +377,7 @@ function pageHeader(eyebrow, title, description, action = "") {
 function projectCard(project, compact = false) {
   const owned = project.access_type === "OWNS";
   return `<article class="project-card ${compact ? "project-card-compact" : ""}">
-    <div class="project-card-top"><span class="project-symbol">${escapeHtml(project.name.charAt(0).toUpperCase() || "P")}</span><span class="access-badge ${owned ? "badge-owner" : "badge-shared"}">${owned ? "Owned by you" : "Shared with you"}</span></div>
+    <div class="project-card-top"><span class="project-symbol">${escapeHtml(project.name.charAt(0).toUpperCase() || "P")}</span><span class="access-badge ${owned ? "badge-owner" : "badge-shared"}">${escapeHtml(projectRoleLabel(project))}</span></div>
     <h3>${escapeHtml(project.name)}</h3>
     <p>${escapeHtml(project.description || "A private space for project credentials and shared access.")}</p>
     <div class="project-card-bottom"><span>${state.secrets[project.id]?.length ?? "—"} secrets</span><button type="button" class="link-button" data-action="open-project" data-project-id="${escapeHtml(project.id)}">Open vault <span aria-hidden="true">→</span></button></div>
@@ -302,12 +390,12 @@ function renderOverview() {
   return `
     ${pageHeader("YOUR WORKSPACE", `Good to see you, ${escapeHtml(state.email.split("@")[0])}.`, "A clear view of your projects and shared secrets.", `<button class="button button-primary" type="button" data-action="new-project"><span aria-hidden="true">＋</span> New project</button>`)}
     <div class="welcome-banner">
-      <div><p class="eyebrow">Private by design</p><h2>Keep sensitive work<br />in the right hands.</h2><p>Create a project, add a secret, and decide who can access it.</p><button class="button button-light" type="button" data-action="navigate" data-section="vault">Open your vault <span aria-hidden="true">→</span></button></div>
+      <div><p class="eyebrow">Private by design</p><h2>Keep sensitive work<br />in the right hands.</h2><p>Create a project, add a secret, and require quorum approval before anyone can decrypt it.</p><button class="button button-light" type="button" data-action="navigate" data-section="vault">Open your vault <span aria-hidden="true">→</span></button></div>
       <div class="welcome-art" aria-hidden="true"><div class="art-frame"><div class="art-lock"><span></span></div><div class="art-line art-line-long"></div><div class="art-line"></div><div class="art-line art-line-short"></div><span class="art-dot"></span></div><span class="art-caption">PRIVATE<br />PROJECT SPACE</span></div>
     </div>
     <div class="section-heading"><div><h2>Your projects</h2><p>${projects.length ? `${projects.length} ${projects.length === 1 ? "project" : "projects"} in your workspace` : "Start with a dedicated space for your team."}</p></div><button class="link-button" type="button" data-action="navigate" data-section="projects">View all <span aria-hidden="true">→</span></button></div>
     ${projects.length ? `<div class="project-grid">${preview.map((project) => projectCard(project, true)).join("")}</div>` : `<div class="empty-state"><div class="empty-symbol">${icon("folder")}</div><h3>Your workspace starts here</h3><p>Create a project to organize secrets and share access with your team.</p><button type="button" class="button button-secondary" data-action="new-project">Create your first project</button></div>`}
-    <div class="info-strip"><span class="info-mark" aria-hidden="true">i</span><p><strong>Access approvals are not listed yet.</strong> The current API supports approving a request when you know its project, secret ID, and requester email.</p><button class="link-button" type="button" data-action="navigate" data-section="access">Review access <span aria-hidden="true">→</span></button></div>`;
+    <div class="info-strip"><span class="info-mark" aria-hidden="true">i</span><p><strong>Approvals inbox is live.</strong> Review pending secret requests across projects where you are an owner, editor, or reviewer.</p><button class="link-button" type="button" data-action="navigate" data-section="access">Open inbox <span aria-hidden="true">→</span></button></div>`;
 }
 
 function renderProjects() {
@@ -321,58 +409,134 @@ function projectSelect() {
   return `<div class="project-picker"><label for="project-select">Project</label><select id="project-select">${state.projects.map((project) => `<option value="${escapeHtml(project.id)}" ${project.id === state.selectedProjectId ? "selected" : ""}>${escapeHtml(project.name)}</option>`).join("")}</select><span class="select-chevron" aria-hidden="true">⌄</span></div>`;
 }
 
+function renderSecretAction(secret) {
+  const st = state.secretStatuses[secret.id] || { status: "none" };
+  const status = st.status || "none";
+
+  if (status === "pending") {
+    const live = st.current_live_approvals ?? 0;
+    const quorum = st.quorum_size ?? secret.quorum_size;
+    return `<span class="access-badge badge-shared">Pending · ${live}/${quorum} approvals</span>`;
+  }
+  if (status === "approved") {
+    return `<button type="button" class="button button-primary" data-action="claim-access" data-secret-id="${escapeHtml(secret.id)}">Claim access</button>`;
+  }
+  if (status === "claimed") {
+    if (st.access_token) {
+      return `<button type="button" class="button button-primary" data-action="view-secret" data-secret-id="${escapeHtml(secret.id)}">View secret</button>`;
+    }
+    return `<span class="access-badge badge-owner">Claimed</span>`;
+  }
+
+  const label =
+    status === "expired"
+      ? "Expired — Request again"
+      : status === "rejected"
+      ? "Rejected — Request again"
+      : status === "revoked"
+      ? "Revoked — Request again"
+      : "Request access";
+
+  return `<button type="button" class="button button-secondary" data-action="request-access" data-secret-id="${escapeHtml(secret.id)}">${label}</button>`;
+}
+
 function renderVault() {
   const project = selectedProject();
+  const owned = project?.access_type === "OWNS";
   const secrets = state.secrets[project?.id] || null;
-  const controls = project ? `<div class="vault-actions"><button class="button button-secondary" type="button" data-action="reveal-secrets"><span class="eye-icon" aria-hidden="true"></span> ${secrets ? "Refresh secrets" : "Reveal secrets"}</button><button class="button button-primary" type="button" data-action="new-secret">＋ Add secret</button></div>` : "";
+  const controls = project
+    ? `<div class="vault-actions">
+        <button class="button button-secondary" type="button" data-action="refresh-vault">Refresh</button>
+        <button class="button button-primary" type="button" data-action="new-secret">＋ Add secret</button>
+      </div>`
+    : "";
+
   let content = "";
   if (!project) {
     content = `<div class="empty-state"><div class="empty-symbol">${icon("key")}</div><h3>Choose a project to continue</h3><p>Secrets belong to a project, so you can keep access organized.</p></div>`;
-  } else if (secrets === null) {
-    content = `<div class="vault-intro"><div class="vault-lock"><span></span></div><h2>Your secrets stay out of sight.</h2><p>Secret values are decrypted only after you choose to reveal them.</p><button class="button button-primary" type="button" data-action="reveal-secrets">Reveal project secrets</button></div>`;
-  } else if (!secrets.length) {
+  } else if (state.vaultLoading && secrets === null) {
+    content = `<div class="empty-state"><div class="empty-symbol">${icon("key")}</div><h3>Loading vault…</h3><p>Fetching secret metadata and live request status.</p></div>`;
+  } else if (!secrets || !secrets.length) {
     content = `<div class="empty-state"><div class="empty-symbol">${icon("key")}</div><h3>No secrets in this project</h3><p>Add a credential or sensitive value to get started.</p><button class="button button-primary" type="button" data-action="new-secret">Add the first secret</button></div>`;
   } else {
-    content = `<div class="secret-list">${secrets.map((secret) => `
+    content = `<div class="secret-list">${secrets.map((secret) => {
+      const approvers = state.approvers[secret.id] || [];
+      const approverLine = approvers.length
+        ? ` · Approvers: ${approvers.map(escapeHtml).join(", ")}`
+        : "";
+      return `
       <article class="secret-row">
         <div class="secret-key-icon">${icon("key")}</div>
-        <div class="secret-main"><h3>${escapeHtml(secret.key_name)}</h3><p class="secret-value">${escapeHtml(secret.secret_value)}</p></div>
-        <div class="secret-meta"><span>Project secret</span><button type="button" class="link-button" data-action="request-access" data-secret-id="${escapeHtml(secret.id)}">Request approval <span aria-hidden="true">→</span></button></div>
-      </article>`).join("")}</div>`;
+        <div class="secret-main">
+          <h3>${escapeHtml(secret.key_name)}</h3>
+          <p class="secret-value">Quorum: ${secret.quorum_size} · Window: ${secret.access_window_hours}h · Max views: ${secret.max_views}${approverLine}</p>
+        </div>
+        <div class="secret-meta" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          ${renderSecretAction(secret)}
+          ${owned ? `<button type="button" class="link-button" data-action="open-audit" data-secret-id="${escapeHtml(secret.id)}" data-secret-name="${escapeHtml(secret.key_name)}">Audit</button>` : ""}
+          ${owned ? `<button type="button" class="link-button" data-action="open-revoke" data-secret-id="${escapeHtml(secret.id)}" data-secret-name="${escapeHtml(secret.key_name)}">Revoke</button>` : ""}
+        </div>
+      </article>`;
+    }).join("")}</div>`;
   }
+
   return `
-    ${pageHeader("SENSITIVE VALUES", "Secret vault", "Reveal only what you need. Your project secrets are never shown automatically.", controls)}
-    <div class="vault-toolbar">${projectSelect()}${project ? `<span class="vault-project-caption"><span class="status-dot"></span> ${escapeHtml(project.name)} vault</span>` : ""}</div>
+    ${pageHeader("SENSITIVE VALUES", "Secret vault", "Metadata only. Request access, collect quorum approvals, and claim a one-time token to decrypt.", controls)}
+    <div class="vault-toolbar">${projectSelect()}${project ? `<span class="vault-project-caption"><span class="status-dot"></span> ${escapeHtml(project.name)} · ${escapeHtml(projectRoleLabel(project))}</span>` : ""}</div>
     ${project ? content : ""}
-    ${project ? `<p class="vault-footnote"><span class="lock-icon" aria-hidden="true"></span>Secret values are decrypted by the backend when you reveal them. Your project role determines whether you can add or request access.</p>` : ""}`;
+    ${project ? `<p class="vault-footnote"><span class="lock-icon" aria-hidden="true"></span>Plaintext is never returned in vault listings. Access tokens live in memory only and burn after max views.</p>` : ""}`;
 }
 
 function renderAccess() {
+  const inboxHtml = state.inboxLoading
+    ? `<p class="form-intro">Loading pending requests…</p>`
+    : !state.inbox.length
+    ? `<div class="inline-empty"><p>No pending requests waiting on your approval.</p></div>`
+    : `<div class="secret-list">${state.inbox.map((item) => {
+        const ownsProject = state.projects.some(
+          (p) => p.id === item.project_id && p.access_type === "OWNS"
+        );
+        return `
+        <article class="secret-row" style="display:flex;flex-direction:column;align-items:flex-start;gap:10px;">
+          <div class="secret-main">
+            <h3>${escapeHtml(item.key_name)} <small style="font-weight:400;opacity:0.75;">in ${escapeHtml(item.project_name)}</small></h3>
+            <p class="secret-value">Requested by <strong>${escapeHtml(item.requester_email)}</strong> · ${item.live_approvals}/${item.quorum_size} live approvals</p>
+          </div>
+          <div class="button-row" style="align-items:center;gap:8px;">
+            <select data-validity-for="${escapeHtml(item.request_id)}" aria-label="Approval validity" style="width:auto;padding:6px 10px;">
+              <option value="3600">Valid 1h</option>
+              <option value="86400" selected>Valid 24h</option>
+              <option value="604800">Valid 7d</option>
+            </select>
+            <button type="button" class="button button-primary" data-action="inbox-approve" data-project-id="${escapeHtml(item.project_id)}" data-secret-id="${escapeHtml(item.secret_id)}" data-request-id="${escapeHtml(item.request_id)}" data-target-email="${escapeHtml(item.requester_email)}">Approve</button>
+            <button type="button" class="button button-secondary button-danger" data-action="inbox-reject" data-project-id="${escapeHtml(item.project_id)}" data-secret-id="${escapeHtml(item.secret_id)}" data-request-id="${escapeHtml(item.request_id)}" data-target-email="${escapeHtml(item.requester_email)}">Reject</button>
+            ${ownsProject ? `<button type="button" class="link-button" data-action="inbox-revoke" data-project-id="${escapeHtml(item.project_id)}" data-secret-id="${escapeHtml(item.secret_id)}" data-request-id="${escapeHtml(item.request_id)}" data-target-email="${escapeHtml(item.requester_email)}">Revoke</button>` : ""}
+          </div>
+        </article>`;
+      }).join("")}</div>`;
+
   return `
-    ${pageHeader("TEAM PERMISSIONS", "Shared access", "Invite someone to a project or process an access request you have received.")}
+    ${pageHeader("TEAM PERMISSIONS", "Shared access", "Invite teammates to a project or review pending requests in your inbox.")}
     <div class="access-layout">
       <section class="content-card">
         <div class="card-heading"><span class="card-icon">${icon("users")}</span><div><h2>Share a project</h2><p>Give a teammate access to the selected project.</p></div></div>
         ${state.projects.length ? `<form data-form="share-project" class="stack-form">
           <label for="share-project-select">Project</label><select id="share-project-select" name="project_id" required>${state.projects.map((project) => `<option value="${escapeHtml(project.id)}" ${project.id === state.selectedProjectId ? "selected" : ""}>${escapeHtml(project.name)}</option>`).join("")}</select>
-          <label for="share-email">Teammate's email</label><input id="share-email" name="target_email" type="email" placeholder="teammate@company.com" required />
-          <label for="share-role">Permission</label><select id="share-role" name="role"><option value="viewer">Viewer — can view project secrets</option><option value="editor">Editor — can add secrets and approve requests</option></select>
+          <label for="share-email">Teammate's email or username</label><input id="share-email" name="target_email" type="text" placeholder="teammate@company.com" required />
+          <label for="share-role">Permission</label><select id="share-role" name="role"><option value="viewer">Viewer — can request secret access</option><option value="editor">Editor — can add secrets and approve requests</option></select>
           <button class="button button-primary" type="submit">Share project <span aria-hidden="true">→</span></button>
         </form>` : `<div class="inline-empty"><p>Create a project before you can share it.</p><button class="button button-secondary" type="button" data-action="new-project">Create project</button></div>`}
       </section>
       <section class="content-card approval-card">
-        <div class="card-heading"><span class="card-icon approval-icon">${icon("key")}</span><div><h2>Review a request</h2><p>Process a known pending request.</p></div></div>
-        <div class="notice notice-soft"><span class="info-mark" aria-hidden="true">i</span><p>The API does not provide an inbox yet. Ask the requester for their email and secret ID, then enter them here.</p></div>
-        ${state.projects.length ? `<form data-form="review-request" class="stack-form">
-          <label for="review-project-select">Project</label><select id="review-project-select" name="project_id" required>${state.projects.map((project) => `<option value="${escapeHtml(project.id)}" ${project.id === state.selectedProjectId ? "selected" : ""}>${escapeHtml(project.name)}</option>`).join("")}</select>
-          <label for="secret-id">Secret ID</label><input id="secret-id" name="secret_id" placeholder="Paste the secret ID" required />
-          <label for="requester-email">Requester email</label><input id="requester-email" name="target_email" type="email" placeholder="requester@company.com" required />
-          <div class="button-row"><button class="button button-primary" type="submit" name="decision" value="approve">Approve request</button><button class="button button-secondary button-danger" type="submit" name="decision" value="reject">Reject</button></div>
-        </form>` : ""}
+        <div class="card-heading" style="justify-content:space-between;width:100%;">
+          <div style="display:flex;align-items:center;gap:12px;"><span class="card-icon approval-icon">${icon("key")}</span><div><h2>Approvals inbox</h2><p>Pending requests across your projects.</p></div></div>
+          <button type="button" class="button button-secondary" data-action="refresh-inbox">Refresh</button>
+        </div>
+        ${inboxHtml}
       </section>
     </div>
     <section class="member-section"><div class="section-heading"><div><h2>Project access</h2><p>Projects available in your workspace.</p></div><button type="button" class="link-button" data-action="navigate" data-section="projects">Manage projects <span aria-hidden="true">→</span></button></div>
-      ${state.projects.length ? `<div class="access-project-list">${state.projects.map((project) => `<div class="access-project"><span class="project-symbol small-symbol">${escapeHtml(project.name.charAt(0).toUpperCase() || "P")}</span><div><strong>${escapeHtml(project.name)}</strong><small>${project.access_type === "OWNS" ? "Owned by you" : "Shared with you"}</small></div><button type="button" class="link-button" data-action="select-project" data-project-id="${escapeHtml(project.id)}">Open vault <span aria-hidden="true">→</span></button></div>`).join("")}</div>` : ""}
+      ${state.projects.length ? `<div class="access-project-list">${state.projects.map((project) => `<div class="access-project"><span class="project-symbol small-symbol">${escapeHtml(project.name.charAt(0).toUpperCase() || "P")}</span><div><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(projectRoleLabel(project))}</small></div><button type="button" class="link-button" data-action="select-project" data-project-id="${escapeHtml(project.id)}">Open vault <span aria-hidden="true">→</span></button></div>`).join("")}</div>` : ""}
     </section>`;
 }
 
@@ -390,22 +554,36 @@ function renderModal() {
   if (!modal) return "";
   let title = "";
   let content = "";
+
   if (modal.kind === "project") {
     title = "Create a project";
     content = `<p class="modal-intro">Give your team a clear, private space to work.</p><form data-form="create-project" class="stack-form"><label for="project-name">Project name</label><input id="project-name" name="name" placeholder="e.g. Product launch" required maxlength="80" /><label for="project-description">Description <span class="optional">(optional)</span></label><textarea id="project-description" name="description" rows="3" placeholder="What is this project for?"></textarea><div class="modal-actions"><button class="button button-secondary" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">Create project</button></div></form>`;
   } else if (modal.kind === "secret") {
     title = "Add a secret";
-    content = `<p class="modal-intro">Add a value to <strong>${escapeHtml(selectedProject()?.name || "this project")}</strong>. You can reveal it later from the vault.</p><form data-form="create-secret" class="stack-form"><label for="secret-name">Secret name</label><input id="secret-name" name="key_name" placeholder="e.g. Production API key" required maxlength="100" /><label for="secret-value">Secret value</label><textarea id="secret-value" name="secret_value" rows="4" placeholder="Paste the sensitive value" required></textarea><div class="form-two-col"><div><label for="quorum">Approvals required</label><input id="quorum" name="quorum_size" type="number" min="1" value="1" required /></div><div><label for="window-hours">Request window (hours)</label><input id="window-hours" name="access_window_hours" type="number" min="1" value="24" required /></div></div><div class="notice notice-soft"><span class="lock-icon" aria-hidden="true"></span><p>Values are encrypted by the backend using its configured master key.</p></div><div class="modal-actions"><button class="button button-secondary" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">Save secret</button></div></form>`;
-  } else if (modal.kind === "approval-token") {
-    title = "Request approved";
-    content = `<p class="modal-intro">The backend reached the required approval count. Share this temporary access token with the requester through a trusted channel.</p><label for="issued-token">Temporary access token</label><div class="token-field"><input id="issued-token" value="${escapeHtml(modal.token)}" readonly /><button type="button" class="button button-secondary" data-action="copy-token">Copy</button></div><p class="modal-footnote">The token expires after one hour. The API also requires the requester to be signed in to access it.</p><div class="modal-actions"><button class="button button-primary" type="button" data-action="close-modal">Done</button></div>`;
+    content = `<p class="modal-intro">Add a value to <strong>${escapeHtml(selectedProject()?.name || "this project")}</strong>. Access requires quorum approval.</p><form data-form="create-secret" class="stack-form"><label for="secret-name">Secret name</label><input id="secret-name" name="key_name" placeholder="e.g. Production API key" required maxlength="100" /><label for="secret-value">Secret value</label><textarea id="secret-value" name="secret_value" rows="4" placeholder="Paste the sensitive value" required></textarea><div class="form-two-col"><div><label for="quorum">Approvals required</label><input id="quorum" name="quorum_size" type="number" min="1" value="1" required /></div><div><label for="window-hours">Access window (hours)</label><input id="window-hours" name="access_window_hours" type="number" min="1" value="24" required /></div></div><label for="max-views">Max views per token</label><input id="max-views" name="max_views" type="number" min="1" value="1" required /><div class="notice notice-soft"><span class="lock-icon" aria-hidden="true"></span><p>Values are encrypted with AES-256-GCM by the backend.</p></div><div class="modal-actions"><button class="button button-secondary" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">Save secret</button></div></form>`;
+  } else if (modal.kind === "view-secret") {
+    title = modal.secretName || "Decrypted secret";
+    content = `<p class="modal-intro">Views remaining after this read: <strong>${modal.viewsRemaining}</strong></p><label for="decrypted-value">Secret value</label><div class="token-field"><input id="decrypted-value" value="${escapeHtml(modal.secretValue)}" readonly /><button type="button" class="button button-secondary" data-action="copy-secret">Copy</button></div><p class="modal-footnote">${modal.viewsRemaining === 0 ? "This token has been burned and removed from memory." : "Close this dialog when done."}</p><div class="modal-actions"><button class="button button-primary" type="button" data-action="close-modal">Done</button></div>`;
+  } else if (modal.kind === "audit") {
+    title = `Audit log · ${escapeHtml(modal.secretName)}`;
+    const rows = modal.logs || [];
+    content = !rows.length
+      ? `<p class="modal-intro">No audit events recorded for this secret yet.</p><div class="modal-actions"><button class="button button-primary" type="button" data-action="close-modal">Close</button></div>`
+      : `<div style="max-height:360px;overflow:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+          <thead><tr style="text-align:left;border-bottom:1px solid var(--border, #ddd);"><th style="padding:6px;">Time</th><th style="padding:6px;">Actor</th><th style="padding:6px;">Type</th><th style="padding:6px;">Target</th><th style="padding:6px;">Outcome</th></tr></thead>
+          <tbody>${rows.map((log) => `<tr style="border-bottom:1px solid var(--border, #eee);"><td style="padding:6px;white-space:nowrap;">${escapeHtml((log.timestamp || "").replace("T", " ").slice(0, 19))}</td><td style="padding:6px;">${escapeHtml(log.actor)}</td><td style="padding:6px;">${escapeHtml(log.type)}</td><td style="padding:6px;">${escapeHtml(log.target || "—")}</td><td style="padding:6px;">${escapeHtml(log.outcome)}${log.reason ? ` (${escapeHtml(log.reason)})` : ""}</td></tr>`).join("")}</tbody>
+        </table></div><div class="modal-actions" style="margin-top:16px;"><button class="button button-primary" type="button" data-action="close-modal">Close</button></div>`;
+  } else if (modal.kind === "revoke") {
+    title = `Revoke access · ${escapeHtml(modal.secretName)}`;
+    content = `<p class="modal-intro">Immediately terminate any active token or pending request for a user on this secret.</p><form data-form="revoke-secret" class="stack-form"><input type="hidden" name="secret_id" value="${escapeHtml(modal.secretId)}" /><label for="revoke-email">Target user email or username</label><input id="revoke-email" name="target_email" type="text" placeholder="anirudh" required /><div class="modal-actions"><button class="button button-secondary" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">Revoke access</button></div></form>`;
   } else if (modal.kind === "sign-out") {
     title = "Sign out of Hush?";
-    content = `<p class="modal-intro">You can sign back in any time with your email and password. Your projects and secrets will remain in your workspace.</p><div class="modal-actions"><button class="button button-secondary" type="button" data-action="close-modal">Stay signed in</button><button class="button button-primary" type="button" data-action="confirm-sign-out-now">Sign out</button></div>`;
+    content = `<p class="modal-intro">You can sign back in any time. Any unclaimed or in-memory access tokens on this device will be cleared.</p><div class="modal-actions"><button class="button button-secondary" type="button" data-action="close-modal">Stay signed in</button><button class="button button-primary" type="button" data-action="confirm-sign-out-now">Sign out</button></div>`;
   } else if (modal.kind === "about") {
     title = "About Hush";
-    content = `<p class="modal-intro">Hush is a calm workspace for organizing project secrets and sharing access with intention.</p><div class="notice notice-soft"><span class="lock-icon" aria-hidden="true"></span><p>Your backend controls account security and secret encryption. Hush only reveals a project's values after you ask to reveal them.</p></div><div class="modal-actions"><button class="button button-primary" type="button" data-action="close-modal">Got it</button></div>`;
+    content = `<p class="modal-intro">Hush is a multi-model secret vault built on FastAPI, Neo4j, and Redis with quorum-gated access.</p><div class="notice notice-soft"><span class="lock-icon" aria-hidden="true"></span><p>Secrets stay encrypted at rest and require live quorum approvals before a one-time token can be claimed.</p></div><div class="modal-actions"><button class="button button-primary" type="button" data-action="close-modal">Got it</button></div>`;
   }
+
   return `<div class="modal-backdrop" data-action="backdrop-close"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-heading"><h2 id="modal-title">${title}</h2><button class="icon-button" type="button" data-action="close-modal" aria-label="Close dialog">×</button></div>${content}</section></div>`;
 }
 
@@ -448,7 +626,7 @@ async function submitProject(form) {
     await loadProjects();
     state.selectedProjectId = result.project.id;
     state.section = "vault";
-    render();
+    await loadVault(state.selectedProjectId);
     notify("Project created.");
   } catch (error) {
     notify(error.message, "error");
@@ -467,13 +645,12 @@ async function submitSecret(form) {
         secret_value: data.get("secret_value"),
         quorum_size: Number(data.get("quorum_size")),
         access_window_hours: Number(data.get("access_window_hours")),
-        max_views: 1,
+        max_views: Number(data.get("max_views") || 1),
       }),
     });
     state.modal = null;
-    delete state.secrets[project.id];
-    render();
-    notify("Secret saved. Reveal the vault to view it.");
+    await loadVault(project.id);
+    notify("Secret saved.");
   } catch (error) {
     notify(error.message, "error");
   }
@@ -493,22 +670,20 @@ async function submitShare(form) {
   }
 }
 
-async function submitReview(form, decision) {
+async function submitRevoke(form) {
+  const project = selectedProject();
+  if (!project) return;
   const data = new FormData(form);
-  const projectId = encodeURIComponent(data.get("project_id"));
-  const secretId = encodeURIComponent(data.get("secret_id"));
-  const action = decision === "reject" ? "reject" : "approve";
+  const secretId = String(data.get("secret_id"));
+  const targetEmail = String(data.get("target_email")).trim();
   try {
-    const result = await api(`/projects/${projectId}/secrets/${secretId}/${action}`, {
+    await api(`/projects/${encodeURIComponent(project.id)}/secrets/${encodeURIComponent(secretId)}/revoke`, {
       method: "POST",
-      body: JSON.stringify({ target_email: data.get("target_email") }),
+      body: JSON.stringify({ target_email: targetEmail }),
     });
-    if (result.access_token) {
-      state.modal = { kind: "approval-token", token: result.access_token };
-      render();
-    } else {
-      notify(action === "reject" ? "Request rejected." : result.message || "Approval recorded.");
-    }
+    state.modal = null;
+    await loadVault(project.id);
+    notify(`Access revoked for ${targetEmail}.`);
   } catch (error) {
     notify(error.message, "error");
   }
@@ -521,6 +696,7 @@ document.addEventListener("click", async (event) => {
 
   if (action === "backdrop-close" && event.target !== button) return;
   if (action === "close-drawer" && event.target !== button) return;
+
   if (action === "home") {
     if (state.token) {
       state.section = "overview";
@@ -533,17 +709,19 @@ document.addEventListener("click", async (event) => {
     state.route = "auth";
     state.authMode = button.dataset.mode;
     renderAuth(button.dataset.mode);
-  } else if (action === "navigate") {
+  } else if (action === "navigate" || action === "drawer-navigate") {
     state.section = button.dataset.section;
+    state.drawerOpen = false;
     render();
+    if (state.section === "vault" && state.selectedProjectId) {
+      await loadVault(state.selectedProjectId);
+    } else if (state.section === "access") {
+      await loadInbox();
+    }
   } else if (action === "open-drawer") {
     state.drawerOpen = true;
     render();
   } else if (action === "close-drawer") {
-    state.drawerOpen = false;
-    render();
-  } else if (action === "drawer-navigate") {
-    state.section = button.dataset.section;
     state.drawerOpen = false;
     render();
   } else if (action === "drawer-help") {
@@ -575,32 +753,130 @@ document.addEventListener("click", async (event) => {
   } else if (action === "open-project" || action === "select-project") {
     state.selectedProjectId = button.dataset.projectId;
     state.section = "vault";
-    render();
-  } else if (action === "reveal-secrets") {
+    await loadVault(state.selectedProjectId);
+  } else if (action === "refresh-vault") {
+    if (state.selectedProjectId) await loadVault(state.selectedProjectId);
+  } else if (action === "refresh-inbox") {
+    await loadInbox();
+  } else if (action === "request-access") {
     const project = selectedProject();
-    if (!project) return;
-    button.disabled = true;
-    button.textContent = "Revealing…";
+    const secretId = button.dataset.secretId;
+    if (!project || !secretId) return;
     try {
-      const result = await api(`/projects/${encodeURIComponent(project.id)}/secrets/reveal`, { method: "POST" });
-      state.secrets[project.id] = result.secrets || [];
+      const result = await api(
+        `/projects/${encodeURIComponent(project.id)}/secrets/${encodeURIComponent(secretId)}/request`,
+        { method: "POST" }
+      );
+      state.secretStatuses[secretId] = {
+        ...(state.secretStatuses[secretId] || {}),
+        request_id: result.request_id,
+        status: result.status,
+      };
+      await loadVault(project.id);
+      notify(result.message || "Access request submitted.");
+    } catch (error) {
+      notify(error.message, "error");
+    }
+  } else if (action === "claim-access") {
+    const project = selectedProject();
+    const secretId = button.dataset.secretId;
+    const reqId = state.secretStatuses[secretId]?.request_id;
+    if (!project || !secretId) return;
+    const reqQuery = reqId ? `?request_id=${encodeURIComponent(reqId)}` : "";
+    try {
+      const result = await api(
+        `/projects/${encodeURIComponent(project.id)}/secrets/${encodeURIComponent(secretId)}/claim${reqQuery}`,
+        { method: "POST" }
+      );
+      state.secretStatuses[secretId] = {
+        ...(state.secretStatuses[secretId] || {}),
+        request_id: result.request_id,
+        status: "claimed",
+        access_token: result.access_token,
+      };
+      render();
+      notify("Access token claimed. Click View secret to decrypt.");
+    } catch (error) {
+      if (error.status === 410) {
+        state.secretStatuses[secretId] = { status: "expired" };
+        render();
+      }
+      notify(error.message, "error");
+    }
+  } else if (action === "view-secret") {
+    const secretId = button.dataset.secretId;
+    const st = state.secretStatuses[secretId];
+    const token = st?.access_token;
+    if (!token) {
+      notify("No active token in memory. Claim or request access again.", "error");
+      return;
+    }
+    const secretMeta = (state.secrets[state.selectedProjectId] || []).find((s) => s.id === secretId);
+    try {
+      const result = await api(`/secrets/access/${encodeURIComponent(token)}`, { method: "POST" });
+      if (result.views_remaining === 0) {
+        state.secretStatuses[secretId] = { status: "none" };
+      }
+      state.modal = {
+        kind: "view-secret",
+        secretName: secretMeta?.key_name || "Decrypted secret",
+        secretValue: result.secret_value,
+        viewsRemaining: result.views_remaining,
+      };
+      render();
+    } catch (error) {
+      if (error.status === 403) {
+        state.secretStatuses[secretId] = { status: "none" };
+        render();
+      }
+      notify(error.message, "error");
+    }
+  } else if (action === "copy-secret") {
+    const value = document.querySelector("#decrypted-value")?.value;
+    if (value) {
+      await navigator.clipboard.writeText(value);
+      notify("Secret copied to clipboard.");
+    }
+  } else if (action === "open-audit") {
+    const project = selectedProject();
+    const secretId = button.dataset.secretId;
+    const secretName = button.dataset.secretName;
+    if (!project || !secretId) return;
+    try {
+      const result = await api(
+        `/projects/${encodeURIComponent(project.id)}/secrets/${encodeURIComponent(secretId)}/audit?limit=50&skip=0`
+      );
+      state.modal = { kind: "audit", secretName, logs: result.audit_log || [] };
       render();
     } catch (error) {
       notify(error.message, "error");
     }
-  } else if (action === "request-access") {
-    const project = selectedProject();
+  } else if (action === "open-revoke") {
+    state.modal = {
+      kind: "revoke",
+      secretId: button.dataset.secretId,
+      secretName: button.dataset.secretName,
+    };
+    render();
+  } else if (action === "inbox-approve" || action === "inbox-reject" || action === "inbox-revoke") {
+    const { projectId, secretId, requestId, targetEmail } = button.dataset;
+    const endpoint =
+      action === "inbox-approve" ? "approve" : action === "inbox-reject" ? "reject" : "revoke";
+    const validitySelect = document.querySelector(`select[data-validity-for="${requestId}"]`);
+    const approval_validity_seconds = Number(validitySelect?.value || 86400);
+    const body =
+      endpoint === "approve"
+        ? { target_email: targetEmail, request_id: requestId, approval_validity_seconds }
+        : { target_email: targetEmail, request_id: requestId };
     try {
-      await api(`/projects/${encodeURIComponent(project.id)}/secrets/${encodeURIComponent(button.dataset.secretId)}/request`, { method: "POST" });
-      notify("Access request sent. An editor or project owner must approve it.");
+      const result = await api(
+        `/projects/${encodeURIComponent(projectId)}/secrets/${encodeURIComponent(secretId)}/${endpoint}`,
+        { method: "POST", body: JSON.stringify(body) }
+      );
+      notify(result.message || `Request ${endpoint}d.`);
+      await loadInbox();
     } catch (error) {
       notify(error.message, "error");
-    }
-  } else if (action === "copy-token") {
-    const token = document.querySelector("#issued-token")?.value;
-    if (token) {
-      await navigator.clipboard.writeText(token);
-      notify("Access token copied.");
     }
   }
 });
@@ -617,16 +893,15 @@ document.addEventListener("submit", async (event) => {
     await submitSecret(form);
   } else if (form.dataset.form === "share-project") {
     await submitShare(form);
-  } else if (form.dataset.form === "review-request") {
-    const decision = event.submitter?.value || "approve";
-    await submitReview(form, decision);
+  } else if (form.dataset.form === "revoke-secret") {
+    await submitRevoke(form);
   }
 });
 
-document.addEventListener("change", (event) => {
+document.addEventListener("change", async (event) => {
   if (event.target.id === "project-select") {
     state.selectedProjectId = event.target.value;
-    render();
+    await loadVault(state.selectedProjectId);
   }
 });
 
